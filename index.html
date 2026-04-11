@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Presensi SMK Ad-Da'wah</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+    <style>
+        :root { --primary-green: #16a34a; --dark-green: #14532d; --light-green: #f0fdf4; --border-green: #bbf7d0; }
+        body { background-color: var(--light-green); color: var(--dark-green); font-family: 'Inter', sans-serif; }
+        .main-card { background: #ffffff; border-radius: 20px; padding: 25px; border: 1px solid var(--border-green); box-shadow: 0 10px 25px rgba(22, 163, 74, 0.1); }
+        .video-container { position: relative; width: 100%; max-width: 480px; height: 360px; margin: 0 auto; background: #000; border-radius: 15px; overflow: hidden; border: 5px solid var(--primary-green); display: none; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .loading-box { width: 100%; max-width: 480px; height: 360px; margin: 0 auto; background: #f8fafc; border-radius: 15px; display: flex; align-items: center; justify-content: center; flex-direction: column; border: 3px dashed #cbd5e1; }
+        .instruction-box { background: var(--primary-green); color: white; padding: 15px; border-radius: 12px; margin-top: 15px; font-weight: 600; text-align: center; }
+        .gps-status { font-size: 0.85rem; margin-top: 10px; font-weight: bold; }
+        .nav-link { cursor: pointer; color: #64748b; font-weight: 600; }
+        .nav-link.active { color: var(--primary-green) !important; border-bottom: 3px solid var(--primary-green) !important; }
+        .admin-panel, .walikelas-panel { display: none; margin-top: 20px; text-align: left; }
+       #map { 
+    height: 450px !important; 
+    width: 100% !important;
+    min-height: 450px !important;
+    border-radius: 12px; 
+    border: 2px solid #16a34a;
+    background-color: #e5e7eb; /* Warna dasar saat loading */
+}
+    </style>
+</head>
+<body>
+
+<div class="container py-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-10 text-center">
+            
+            <div class="mb-4">
+                <img src="image/Addawah@300x.png" alt="Logo SMK Ad-Da'wah" style="max-height: 80px;" onerror="this.innerHTML='SMK AD-DA\'WAH'">
+                <h3 class="mt-2 fw-bold text-success">Sistem Presensi Geofencing & AI</h3>
+            </div>
+
+            <div class="main-card">
+                <ul class="nav nav-tabs justify-content-center border-0 mb-4">
+                    <li class="nav-item"><a id="navAbsen" class="nav-link active" onclick="switchMode('absen')">🕒 Presensi</a></li>
+                    <li class="nav-item"><a id="navWali" class="nav-link" onclick="switchMode('walikelas')">🏫 Wali Kelas</a></li>
+                    <li class="nav-item"><a id="navAdmin" class="nav-link" onclick="switchMode('admin')">⚙️ Admin</a></li>
+                </ul>
+
+                <div id="absenArea">
+                    <div id="loading" class="loading-box">
+                        <div class="spinner-border text-success mb-3" role="status"></div>
+                        <h5>Menyiapkan Sistem...</h5>
+                    </div>
+                    
+                    <div class="video-container" id="videoContainer">
+                        <video id="video" autoplay muted playsinline></video>
+                    </div>
+                    <div id="instruction" class="instruction-box">Sistem belum siap...</div>
+                    <div id="gpsStatus" class="gps-status text-warning">🌍 Memeriksa Lokasi GPS...</div>
+                </div>
+
+                <div id="waliArea" class="walikelas-panel">
+                    <h5 class="fw-bold mb-3 border-start border-4 border-success ps-2">Data Kelas</h5>
+                    <select id="filterKelasWali" class="form-select border-success w-50 mb-3"><option value="">-- Pilih Kelas --</option></select>
+                    <table class="table table-hover table-sm">
+                        <thead class="table-success"><tr><th>Nama</th><th>Status Masuk</th><th>Status Pulang</th></tr></thead>
+                        <tbody id="tableWaliKelas"><tr><td colspan="3" class="text-center">Belum ada data</td></tr></tbody>
+                    </table>
+                </div>
+
+                <div id="adminArea" class="admin-panel">
+                    <ul class="nav nav-pills mb-3 bg-light p-2 rounded">
+                        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tabData">Pengguna</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tabExport">📥 Export Template Excel</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tabImport">📤 Import Data Excel</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tabMap">🗺️ Mapping Sekolah</a></li>
+                    </ul>
+
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="tabData">
+                            <select id="filterRole" class="form-select mb-3 w-25 border-success" onchange="renderTable()"><option value="Semua">Semua</option><option value="Siswa">Siswa</option><option value="Guru">Guru</option><option value="Wali Kelas">Wali Kelas</option></select>
+                            <table class="table table-sm"><thead class="table-dark"><tr><th>Nama/Role</th><th>NIS/NIP</th><th>Wajah</th><th>Aksi</th></tr></thead><tbody id="tablePeserta"></tbody></table>
+                        </div>
+
+                        <div class="tab-pane fade" id="tabExport">
+                            <div class="card p-4 border-info">
+                                <h5>1. Download Template Data Kosong</h5>
+                                <button onclick="downloadExcelTemplate()" class="btn btn-info text-white w-100">Download .XLSX</button>
+                            </div>
+                        </div>
+
+                        <div class="tab-pane fade" id="tabImport">
+                            <div class="card p-4 border-success">
+                                <h5>2. Upload Data (.xlsx) ke Database</h5>
+                                <input type="file" id="fileExcel" class="form-control mb-3" accept=".xlsx, .xls, .csv">
+                                <button id="btnImport" onclick="importExcel()" class="btn btn-success w-100">Kirim Ke Database</button>
+                            </div>
+                        </div>
+
+                        <div class="tab-pane fade" id="tabMap">
+                            <div id="map"></div>
+                            <button onclick="savePolygon()" class="btn btn-primary w-100 mt-2">Simpan Radius Sekolah</button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalRekam" data-bs-backdrop="static" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title" id="rekamNama">Rekam Wajah</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="stopAdminCamera()"></button>
+            </div>
+            <div class="modal-body text-center">
+                <div style="width: 100%; height: 250px; background: #000; border-radius: 10px; overflow: hidden;">
+                    <video id="videoAdmin" autoplay muted style="width: 100%; height: 100%; object-fit: cover;"></video>
+                </div>
+                <div id="rekamInstruksi" class="alert alert-secondary mt-3">Persiapkan wajah</div>
+                <button id="btnStartCapture" onclick="startCaptureAlur()" class="btn btn-success w-100">Mulai</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
