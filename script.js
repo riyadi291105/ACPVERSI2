@@ -9,10 +9,17 @@ const gpsStatus = document.getElementById('gpsStatus');
 
 let faceMatcher = null;
 let databaseSiswa = [];
+let databaseAbsen = [];
 let mode = 'absen';
 let isProcessing = false;
 let userLocation = null;
-let isInsideArea = false; // Flag apakah user di dalam area sekolah
+let isInsideArea = false;
+
+// Variabel Pengaturan Server
+let schoolPolygonData = null;
+let schoolPolygon = null;
+let serverJamMasuk = '07:00';
+let serverJamPulang = '14:00';
 
 // INIT SISTEM
 async function init() {
@@ -22,14 +29,16 @@ async function init() {
 
         // 1. Minta Izin Lokasi Sekaligus Load Model
         await Promise.all([
-            requestLocation(), // Ini akan memunculkan popup izin lokasi di browser
+            requestLocation(),
             faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
             faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
             faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
         ]);
 
-        // 2. Load Database
+        // 2. Load Database Pengaturan, Pengguna & Absen
+        await loadSettings(); 
         await loadDatabase();
+        await loadAbsenData();
 
         // 3. Hidupkan Kamera
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -45,16 +54,153 @@ async function init() {
     }
 }
 
-async function loadDatabase() {
-    const res = await fetch(URL_GAS);
-    databaseSiswa = await res.json();
-    
-    const validData = databaseSiswa.filter(s => s.descriptor && s.descriptor !== "");
-    if(validData.length > 0) {
-        const labeled = validData.map(s => new faceapi.LabeledFaceDescriptors(String(s.nis), [new Float32Array(JSON.parse(s.descriptor))]));
-        faceMatcher = new faceapi.FaceMatcher(labeled, 0.55);
+// ------------------------------------------------------------------
+// PENGATURAN DARI SERVER (MAP, JAM, & WA)
+// ------------------------------------------------------------------
+async function loadSettings() {
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify({ action: "get_settings" })
+        });
+        const res = await response.json();
+        
+        if (res.status === "Success" && res.data) {
+            // Load Jam
+            if (res.data.jamMasuk) serverJamMasuk = res.data.jamMasuk;
+            if (res.data.jamPulang) serverJamPulang = res.data.jamPulang;
+            
+            document.getElementById('setJamMasuk').value = serverJamMasuk;
+            document.getElementById('setJamPulang').value = serverJamPulang;
+            document.getElementById('infoJamServer').innerText = "✅ Tersinkronisasi dengan server.";
+            document.getElementById('infoJamServer').className = "text-success mt-2";
+
+            // Load Token & ID Grup Fonnte WA
+            if (res.data.fonnteToken) document.getElementById('fonnteToken').value = res.data.fonnteToken;
+            if (res.data.fonnteGrupId) document.getElementById('fonnteGrupId').value = res.data.fonnteGrupId;
+
+            // Load Polygon
+            if (res.data.polygon && res.data.polygon !== "") {
+                schoolPolygonData = JSON.parse(res.data.polygon);
+                schoolPolygon = schoolPolygonData.coordinates[0];
+                document.getElementById('statusMapAdmin').className = "alert alert-success";
+                document.getElementById('statusMapAdmin').innerText = "Status Peta: Koordinat berhasil dimuat dari Server.";
+                
+                // 👇 INI KUNCI PERBAIKANNYA 👇
+                // Panggil ulang pengecekan GPS agar statusnya langsung berubah 
+                // dari "Mendownload data..." menjadi "Posisi Sesuai"
+                if (typeof checkGeofence === "function") {
+                    checkGeofence();
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Gagal memuat pengaturan dari server", e);
     }
-    renderTable();
+}
+
+async function loadDatabase() {
+    try {
+        const res = await fetch(URL_GAS);
+        databaseSiswa = await res.json();
+        
+        const validData = databaseSiswa.filter(s => s.descriptor && s.descriptor !== "");
+        if(validData.length > 0) {
+            const labeled = validData.map(s => new faceapi.LabeledFaceDescriptors(String(s.nis), [new Float32Array(JSON.parse(s.descriptor))]));
+            faceMatcher = new faceapi.FaceMatcher(labeled, 0.55);
+        }
+        renderTable();
+        populateKelasDropdown(); 
+    } catch (e) {
+        console.error("Gagal memuat database siswa", e);
+    }
+}
+
+function populateKelasDropdown() {
+    const filterWali = document.getElementById('filterKelasWali');
+    const uniqueKelas = [...new Set(databaseSiswa.filter(s => s.kelas).map(s => s.kelas))];
+    
+    filterWali.innerHTML = '<option value="">-- Pilih Kelas --</option>';
+    uniqueKelas.forEach(kelas => {
+        filterWali.innerHTML += `<option value="${kelas}">${kelas}</option>`;
+    });
+}
+
+// ------------------------------------------------------------------
+// DATA ABSENSI
+// ------------------------------------------------------------------
+async function loadAbsenData() {
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify({ action: "get_absen" })
+        });
+        const res = await response.json();
+        if (res.status === "Success") {
+            databaseAbsen = res.message; 
+            renderWaliKelas();
+            renderAdminAbsen();
+        }
+    } catch (e) {
+        console.error("Gagal menarik data absen", e);
+    }
+}
+
+function renderWaliKelas() {
+    const filterKelas = document.getElementById('filterKelasWali').value;
+    const table = document.getElementById('tableWaliKelas');
+    table.innerHTML = "";
+
+    const tglHariIni = new Date().toLocaleDateString('en-CA'); 
+    let siswaKelas = databaseSiswa.filter(s => s.role === 'Siswa' && (filterKelas === "" || s.kelas === filterKelas));
+
+    if(siswaKelas.length === 0) {
+        table.innerHTML = `<tr><td colspan="3" class="text-center">Silakan pilih kelas terlebih dahulu.</td></tr>`;
+        return;
+    }
+
+    siswaKelas.forEach(siswa => {
+        let absenHariIni = databaseAbsen.find(a => a.nis === String(siswa.nis) && a.tanggal === tglHariIni);
+        
+        let jamMasuk = absenHariIni ? `<span class="badge bg-success">${absenHariIni.jam_masuk}</span>` : `<span class="badge bg-danger">Belum Hadir</span>`;
+        let jamPulang = (absenHariIni && absenHariIni.jam_pulang) ? `<span class="badge bg-info">${absenHariIni.jam_pulang}</span>` : `<span class="text-muted">-</span>`;
+
+        table.innerHTML += `<tr>
+            <td><b>${siswa.nama}</b><br><small class="text-muted">${siswa.nis}</small></td>
+            <td>${jamMasuk}</td>
+            <td>${jamPulang}</td>
+        </tr>`;
+    });
+}
+
+document.getElementById('filterKelasWali').addEventListener('change', renderWaliKelas);
+
+function renderAdminAbsen() {
+    const table = document.getElementById('tableAbsenAdmin');
+    if(!table) return;
+    table.innerHTML = "";
+    
+    const filterTgl = document.getElementById('filterTanggalAdmin').value;
+    let dataTampil = databaseAbsen;
+    
+    if(filterTgl) {
+        dataTampil = dataTampil.filter(a => a.tanggal === filterTgl);
+    }
+
+    if(dataTampil.length === 0) {
+        table.innerHTML = `<tr><td colspan="5" class="text-center">Tidak ada absen pada tanggal ini.</td></tr>`;
+        return;
+    }
+
+    [...dataTampil].reverse().forEach(a => {
+        table.innerHTML += `<tr>
+            <td>${a.tanggal}</td>
+            <td><b>${a.nama}</b><br><small>${a.nis}</small></td>
+            <td>${a.kelas}</td>
+            <td><span class="badge bg-success">${a.jam_masuk}</span></td>
+            <td>${a.jam_pulang ? `<span class="badge bg-info">${a.jam_pulang}</span>` : '-'}</td>
+        </tr>`;
+    });
 }
 
 // ------------------------------------------------------------------
@@ -67,39 +213,44 @@ function requestLocation() {
             resolve(); return;
         }
         
-        // Meminta lokasi dan mengecek radius
+        gpsStatus.innerText = "⏳ Sedang mencari titik lokasi akurat...";
+        
         navigator.geolocation.watchPosition(
             (position) => {
-                userLocation = [position.coords.latitude, position.coords.longitude]; // Format Lat, Lng
+                userLocation = [position.coords.latitude, position.coords.longitude]; 
                 checkGeofence();
                 resolve();
             },
             (error) => {
                 gpsStatus.className = "gps-status text-danger";
-                gpsStatus.innerText = "❌ Izin Lokasi Ditolak! Anda tidak bisa absen.";
+                gpsStatus.innerText = "❌ Izin Lokasi Ditolak / GPS Lemah! Anda tidak bisa absen.";
                 isInsideArea = false;
-                resolve(); // Tetap resolve agar sistem wajah tetap jalan, tapi absen ditolak nanti
+                resolve(); 
             },
-            { enableHighAccuracy: true }
+            // PENAMBAHAN PENTING: Paksa akurasi tinggi, jangan pakai cache, beri batas waktu
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
         );
     });
 }
 
 function checkGeofence() {
-    const savedArea = localStorage.getItem('schoolArea');
-    if (!savedArea || !userLocation) {
-        gpsStatus.innerText = "⚠️ Area belum di-mapping Admin.";
-        isInsideArea = true; // Jika admin belum mapping, bebas absen
+    // Pisahkan pengecekan agar pesannya jelas penyebabnya lambat di mana
+    if (!schoolPolygon) {
+        gpsStatus.innerText = "⏳ Mendownload data area sekolah dari server...";
+        isInsideArea = true; // Default true jika server belum diset
         return;
     }
 
-    const polygon = JSON.parse(savedArea).coordinates[0]; 
-    // Rumus Ray-Casting untuk cek titik dalam poligon
+    if (!userLocation) {
+        gpsStatus.innerText = "⏳ Menunggu koordinat GPS dari HP Anda...";
+        return;
+    }
+
     let inside = false;
-    let x = userLocation[1], y = userLocation[0]; // Leaflet pake Lng, Lat
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        let xi = polygon[i][0], yi = polygon[i][1];
-        let xj = polygon[j][0], yj = polygon[j][1];
+    let x = userLocation[1], y = userLocation[0]; 
+    for (let i = 0, j = schoolPolygon.length - 1; i < schoolPolygon.length; j = i++) {
+        let xi = schoolPolygon[i][0], yi = schoolPolygon[i][1];
+        let xj = schoolPolygon[j][0], yj = schoolPolygon[j][1];
         let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
         if (intersect) inside = !inside;
     }
@@ -136,8 +287,8 @@ async function detect() {
             const user = databaseSiswa.find(s => String(s.nis) === match.label);
             instruction.innerHTML = `<b>${user.nama}</b> dikenali!<br>Menoleh KANAN untuk absen...`;
 
-            if (ratio < 0.50) { // Menoleh ke kanan terdeteksi
-                if (!isInsideArea && localStorage.getItem('schoolArea')) {
+            if (ratio < 0.50) { 
+                if (!isInsideArea && schoolPolygon) {
                     instruction.innerHTML = "<span class='text-danger'>DITOLAK: Anda di luar jangkauan GPS sekolah!</span>";
                     setTimeout(() => { instruction.innerText = "Silakan Hadap Kamera"; }, 3000);
                     return requestAnimationFrame(detect);
@@ -147,14 +298,27 @@ async function detect() {
                 instruction.innerHTML = `<span class='text-white'>Data dikirim ke server...</span>`;
                 
                 try {
-                    // Fetch tanpa mode no-cors agar response JSON bisa dibaca
                     const response = await fetch(URL_GAS, {
                         method: 'POST',
-                        body: JSON.stringify({ action: "absen_otomatis", nis: user.nis, nama: user.nama, kelas: user.kelas })
+                        body: JSON.stringify({ 
+                            action: "absen_otomatis", 
+                            nis: user.nis, 
+                            nama: user.nama, 
+                            kelas: user.kelas,
+                            role: user.role, 
+                            jamBatasMasuk: serverJamMasuk,
+                            jamBatasPulang: serverJamPulang
+                        })
                     });
                     const resJson = await response.json();
                     
                     instruction.innerHTML = `<span class='text-warning'>${resJson.message}</span>`;
+                    
+                    // PENEMPATAN SUARA DI SINI (Hanya bunyi saat sukses absen)
+                    if (resJson.status === "Success" || resJson.message.toLowerCase().includes("berhasil")) {
+                        bicara(`Terima kasih ${user.nama}, absen berhasil.`);
+                    }
+
                 } catch(e) {
                     instruction.innerText = "Gagal menghubungi server!";
                 }
@@ -170,7 +334,79 @@ async function detect() {
 }
 
 // ------------------------------------------------------------------
-// IMPORT EXCEL (SheetJS) -> FETCH KE GAS DATABASE
+// TABEL PESERTA & EDIT DATA
+// ------------------------------------------------------------------
+function renderTable() {
+    const filter = document.getElementById('filterRole').value;
+    const table = document.getElementById('tablePeserta');
+    table.innerHTML = "";
+
+    const data = filter === "Semua" ? databaseSiswa : databaseSiswa.filter(s => s.role === filter);
+    
+    data.forEach(s => {
+        const hasFace = s.descriptor && s.descriptor.length > 10;
+        table.innerHTML += `<tr>
+            <td><b>${s.nama}</b><br><small>${s.role} - ${s.kelas}</small></td>
+            <td>${s.nis}</td>
+            <td>${hasFace ? '<span class="text-success fw-bold">✔ Ada</span>' : '<span class="text-danger">✘ Belum</span>'}</td>
+            <td>
+                <button onclick="openEditModal('${s.nis}')" class="btn btn-sm btn-warning fw-bold text-dark mb-1">✏️ Edit</button>
+                ${!hasFace ? `<button onclick="openRekamModal('${s.nis}', '${s.nama}')" class="btn btn-sm btn-success mb-1">📸 Rekam</button>` : ''}
+            </td>
+        </tr>`;
+    });
+}
+
+function openEditModal(nisTarget) {
+    const user = databaseSiswa.find(s => String(s.nis) === String(nisTarget));
+    if(!user) return;
+    
+    document.getElementById('editNisLama').value = user.nis;
+    document.getElementById('editNama').value = user.nama;
+    document.getElementById('editRole').value = user.role;
+    document.getElementById('editNis').value = user.nis;
+    document.getElementById('editNisn').value = user.nisn || '';
+    document.getElementById('editKelas').value = user.kelas || '';
+    document.getElementById('editHpSiswa').value = user.no_siswa || '';
+    document.getElementById('editHpOrtu').value = user.no_ortu || '';
+
+    new bootstrap.Modal(document.getElementById('modalEditUser')).show();
+}
+
+async function simpanEditUser() {
+    const btn = event.target;
+    btn.innerText = "Menyimpan...";
+    btn.disabled = true;
+
+    const payload = {
+        action: "edit_user",
+        nis: document.getElementById('editNisLama').value,
+        nama: document.getElementById('editNama').value,
+        role: document.getElementById('editRole').value,
+        nis_baru: document.getElementById('editNis').value,
+        nisn: document.getElementById('editNisn').value,
+        kelas: document.getElementById('editKelas').value,
+        no_siswa: document.getElementById('editHpSiswa').value,
+        no_ortu: document.getElementById('editHpOrtu').value
+    };
+
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        const res = await response.json();
+        alert(res.message);
+        location.reload(); 
+    } catch(e) {
+        alert("Gagal menyimpan perubahan. Cek koneksi.");
+        btn.innerText = "Simpan Perubahan";
+        btn.disabled = false;
+    }
+}
+
+// ------------------------------------------------------------------
+// IMPORT EXCEL
 // ------------------------------------------------------------------
 function downloadExcelTemplate() {
     const data = [{ "Nama Lengkap": "", "Role": "Siswa/Guru", "NIS atau NIP": "", "NISN atau Kode Guru": "", "Kelas atau Mapel": "", "No HP Siswa": "", "No HP Orang Tua": "" }];
@@ -192,7 +428,7 @@ function importExcel() {
     reader.onload = async (e) => {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, {type: 'array'});
-        const sheetName = workbook.SheetNames[0]; // Ambil Sheet Pertama
+        const sheetName = workbook.SheetNames[0]; 
         const jsonArray = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
 
         if(jsonArray.length === 0) return alert("Data Excel kosong!");
@@ -206,7 +442,7 @@ function importExcel() {
             });
             const result = await response.json();
             alert(result.message);
-            location.reload(); // Refresh agar data baru termuat
+            location.reload(); 
         } catch(err) {
             alert("Gagal mengirim data ke server. Pastikan URL Web App benar.");
             btn.innerText = "Kirim Ke Database";
@@ -230,13 +466,12 @@ async function openRekamModal(nis, nama) {
 async function startCaptureAlur() {
     const inst = document.getElementById('rekamInstruksi');
     const btn = document.getElementById('btnStartCapture');
-    btn.disabled = true; // Matikan tombol agar tidak diklik berkali-kali
+    btn.disabled = true; 
     
     try {
         inst.innerText = "Mendeteksi wajah... Diam 2 detik";
         await new Promise(r => setTimeout(r, 2000));
 
-        // PERBAIKAN: Tambahkan .withFaceLandmarks() sebelum .withFaceDescriptor()
         const det = await faceapi.detectSingleFace(
             document.getElementById('videoAdmin'), 
             new faceapi.TinyFaceDetectorOptions()
@@ -245,7 +480,6 @@ async function startCaptureAlur() {
         if (det) {
             inst.innerText = "Wajah tertangkap! Mengirim ke database...";
             
-            // Kirim ke Google Apps Script
             const response = await fetch(URL_GAS, {
                 method: 'POST',
                 body: JSON.stringify({ 
@@ -278,19 +512,16 @@ async function startCaptureAlur() {
 function stopAdminCamera() { if(adminStream) adminStream.getTracks().forEach(t => t.stop()); }
 
 // ------------------------------------------------------------------
-// MAPPING LOKASI & TABEL PESERTA
+// MAPPING LOKASI & NAVIGASI
 // ------------------------------------------------------------------
-let map, drawnItems, schoolPolygon;
-// GANTI / SESUAIKAN BAGIAN INI SAJA DI script.js
+let map, drawnItems;
 
 function initMap() {
     if (map) {
-        // Jika sudah ada, langsung paksa refresh ukuran
         setTimeout(() => map.invalidateSize(), 200);
         return;
     }
 
-    // Inisialisasi Map (Koordinat Default Jakarta/Sekolah)
     map = L.map('map').setView([-6.2444, 106.8778], 16); 
     
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -301,17 +532,15 @@ function initMap() {
     drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
 
-    // Load area jika ada di localStorage
-    const saved = localStorage.getItem('schoolArea');
-    if (saved) {
+    if (schoolPolygonData) {
         try {
-            const geojson = JSON.parse(saved);
-            L.geoJSON(geojson, { 
+            L.geoJSON(schoolPolygonData, { 
                 onEachFeature: (f, layer) => {
                     drawnItems.addLayer(layer);
                     schoolPolygon = f.geometry.coordinates[0];
                 } 
             });
+            map.fitBounds(drawnItems.getBounds());
         } catch(e) { console.error("Gagal load area:", e); }
     }
 
@@ -327,68 +556,20 @@ function initMap() {
         schoolPolygon = e.layer.toGeoJSON().geometry.coordinates[0];
     });
 
-    // TRICK UTAMA: Tunggu tab benar-benar muncul baru render
     setTimeout(() => {
         map.invalidateSize();
     }, 500);
 }
 
-// Tambahkan listener khusus untuk Tab Bootstrap agar Map tidak abu-abu saat diklik
 document.addEventListener('shown.bs.tab', function (e) {
     if (e.target.getAttribute('href') === '#tabMap') {
         if (map) {
-            setTimeout(() => {
-                map.invalidateSize(true);
-            }, 100);
+            setTimeout(() => { map.invalidateSize(true); }, 100);
         } else {
             initMap();
         }
     }
 });
-
-function switchMode(m) {
-    mode = m;
-    document.getElementById('absenArea').style.display = m === 'absen' ? 'block' : 'none';
-    document.getElementById('waliArea').style.display = m === 'walikelas' ? 'block' : 'none';
-    document.getElementById('adminArea').style.display = m === 'admin' ? 'block' : 'none';
-    
-    document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
-    
-    if (m === 'absen') document.getElementById('navAbsen').classList.add('active');
-    if (m === 'walikelas') document.getElementById('navWali').classList.add('active');
-    
-    if (m === 'admin') {
-        document.getElementById('navAdmin').classList.add('active');
-        // PENTING: Panggil initMap setiap kali tab admin dibuka
-        // setTimeout memberikan waktu bagi browser untuk memunculkan elemen #adminArea dulu
-        setTimeout(initMap, 300);
-    }
-}
-
-function savePolygon() {
-    if(!schoolPolygon) return alert("Gambar kotak area dulu!");
-    localStorage.setItem('schoolArea', JSON.stringify({type: "Polygon", coordinates: [schoolPolygon]}));
-    alert("Radius Sekolah Tersimpan!");
-    checkGeofence(); // Update status langsung
-}
-
-function renderTable() {
-    const filter = document.getElementById('filterRole').value;
-    const table = document.getElementById('tablePeserta');
-    table.innerHTML = "";
-
-    const data = filter === "Semua" ? databaseSiswa : databaseSiswa.filter(s => s.role === filter);
-    
-    data.forEach(s => {
-        const hasFace = s.descriptor && s.descriptor.length > 10;
-        table.innerHTML += `<tr>
-            <td><b>${s.nama}</b><br><small>${s.role}</small></td>
-            <td>${s.nis}</td>
-            <td>${hasFace ? '<span class="text-success">✔</span>' : '<span class="text-danger">✘</span>'}</td>
-            <td>${!hasFace ? `<button onclick="openRekamModal('${s.nis}', '${s.nama}')" class="btn btn-sm btn-success">Rekam</button>` : '-'}</td>
-        </tr>`;
-    });
-}
 
 function switchMode(m) {
     mode = m;
@@ -401,6 +582,242 @@ function switchMode(m) {
         document.getElementById('adminArea').style.display = 'block'; document.getElementById('navAdmin').classList.add('active'); 
         setTimeout(initMap, 500); 
     }
+}
+
+// SIMPAN PETA KE SERVER (GOOGLE SHEETS)
+async function savePolygon() {
+    if(!schoolPolygon) return alert("Gambar kotak area dulu!");
+    
+    const geoJsonString = JSON.stringify({type: "Polygon", coordinates: [schoolPolygon]});
+    const btn = event.target;
+    btn.innerText = "Menyimpan ke Server...";
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify({ 
+                action: "save_settings", 
+                type: "polygon",
+                value: geoJsonString 
+            })
+        });
+        const res = await response.json();
+        alert(res.message);
+        checkGeofence();
+    } catch(e) {
+        alert("Gagal menyimpan radius sekolah. Cek koneksi internet.");
+    } finally {
+        btn.innerText = "Simpan Radius Sekolah ke Server";
+        btn.disabled = false;
+    }
+}
+
+// SIMPAN JAM KE SERVER (GOOGLE SHEETS)
+async function simpanPengaturanJam() {
+    const m = document.getElementById('setJamMasuk').value;
+    const p = document.getElementById('setJamPulang').value;
+    const btn = document.getElementById('btnSimpanJam');
+    
+    btn.innerText = "Menyimpan...";
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify({ 
+                action: "save_settings", 
+                type: "jam",
+                jamMasuk: m,
+                jamPulang: p
+            })
+        });
+        const res = await response.json();
+        
+        serverJamMasuk = m;
+        serverJamPulang = p;
+        alert(res.message);
+    } catch(e) {
+        alert("Gagal menyimpan pengaturan jam.");
+    } finally {
+        btn.innerText = "💾 Simpan Jam";
+        btn.disabled = false;
+    }
+}
+
+// SIMPAN SETTING WA FONNTE KE SERVER (BARU DITAMBAHKAN)
+async function saveFonnteSettings() {
+    const token = document.getElementById('fonnteToken').value;
+    const grupId = document.getElementById('fonnteGrupId').value;
+    const btn = event.target;
+    
+    if(!token) return alert("Token WA tidak boleh kosong!");
+    
+    btn.innerText = "Menyimpan WA...";
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(URL_GAS, {
+            method: 'POST',
+            body: JSON.stringify({ 
+                action: "save_settings", 
+                type: "fonnte",
+                token: token,
+                grupId: grupId
+            })
+        });
+        const res = await response.json();
+        alert(res.message);
+    } catch(e) {
+        alert("Gagal menyimpan pengaturan WA.");
+    } finally {
+        btn.innerText = "Simpan WA";
+        btn.disabled = false;
+    }
+}
+
+
+// --- FITUR ADMIN: DOWNLOAD EXCEL HADIR ---
+function exportExcelHadir() {
+    let dataTampil = databaseAbsen || []; 
+    if(dataTampil.length === 0) return alert("Belum ada data kehadiran!");
+
+    const dataBersih = dataTampil.map(d => ({
+        "Tanggal": d.tanggal_indo || d.tanggal, 
+        "NIS/NIP": d.nis,
+        "Nama Lengkap": d.nama,
+        "Kelas/Role": d.kelas,
+        "Status Kehadiran": d.status || 'Hadir',
+        "Jam Masuk": d.jam_masuk,
+        "Jam Pulang": (!d.jam_pulang || d.jam_pulang === "" || d.jam_pulang === "undefined") ? "Belum Pulang" : d.jam_pulang
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(dataBersih);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Rekap_Kehadiran");
+    XLSX.writeFile(wb, `Rekap_Absen_SMK.xlsx`);
+}
+
+// =========================================================
+// FITUR BARU: SUARA, BLAST GRUP, DAN REKAP BULANAN
+// =========================================================
+
+// 1. Fungsi Text-to-Speech (Suara)
+function bicara(teks) {
+  if ('speechSynthesis' in window) {
+    const msg = new SpeechSynthesisUtterance(teks);
+    msg.lang = 'id-ID'; 
+    msg.rate = 1.0; 
+    window.speechSynthesis.speak(msg);
+  }
+}
+
+// 2. Fungsi Tombol Blast ke Grup WA
+async function blastKeGrup() {
+  if(!confirm("Kirim rekap dan jadwal ke grup WA sekarang?")) return;
+  
+  const btn = event.target;
+  const teksLama = btn.innerText;
+  btn.innerText = "Mengirim pesan...";
+  btn.disabled = true;
+  document.body.style.cursor = 'wait';
+  
+  try {
+    const res = await fetch(URL_GAS, { 
+      method: "POST",
+      body: JSON.stringify({ action: "blast_grup" })
+    });
+    const data = await res.json();
+    alert(data.message);
+  } catch (err) {
+    alert("Gagal kirim blast: " + err);
+  } finally {
+    btn.innerText = teksLama;
+    btn.disabled = false;
+    document.body.style.cursor = 'default';
+  }
+}
+
+// 3. Fungsi Input Manual (Sakit/Izin/Alpa)
+async function setStatusManual(nis, nama, kelas, status) {
+  const tgl = new Date().toISOString().split('T')[0]; 
+  
+  if(!confirm(`Set status ${nama} menjadi ${status} pada hari ini?`)) return;
+
+  document.body.style.cursor = 'wait';
+  try {
+    const res = await fetch(URL_GAS, {
+      method: "POST",
+      body: JSON.stringify({
+        action: "input_manual",
+        nis: nis,
+        nama: nama,
+        kelas: kelas,
+        status: status,
+        tanggal: tgl
+      })
+    });
+    const data = await res.json();
+    alert(data.message);
+    loadRekapBulanan(); // Otomatis refresh tabel
+  } catch (err) {
+    alert("Error: " + err);
+  } finally {
+    document.body.style.cursor = 'default';
+  }
+}
+
+// 4. Fungsi Menampilkan Data Rekap di Tabel
+async function loadRekapBulanan() {
+  const val = document.getElementById("filterBulan").value;
+  if(!val) return;
+  const [tahun, bulan] = val.split("-");
+
+  document.body.style.cursor = 'wait';
+  try {
+    const res = await fetch(URL_GAS, {
+      method: "POST",
+      body: JSON.stringify({ action: "get_rekap_bulanan", bulan: bulan, tahun: tahun })
+    });
+    const response = await res.json();
+    const rekap = response.data || {};
+
+    const container = document.getElementById("listSiswaManual");
+    container.innerHTML = ""; 
+    
+    // Perbaikan: Pakai databaseSiswa, difilter hanya yang statusnya "Siswa"
+    const dataSiswa = databaseSiswa.filter(s => s.role === "Siswa");
+
+    if (dataSiswa.length > 0) {
+      dataSiswa.forEach(u => {
+        const r = rekap[u.nis] || { hadir: 0, telat: 0, sakit: 0, izin: 0, alpa: 0 };
+        const row = `
+          <tr>
+            <td>${u.nama}</td>
+            <td>${u.kelas}</td>
+            <td>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-warning" onclick="setStatusManual('${u.nis}','${u.nama}','${u.kelas}','SAKIT')">Sakit</button>
+                <button class="btn btn-info" onclick="setStatusManual('${u.nis}','${u.nama}','${u.kelas}','IZIN')">Izin</button>
+                <button class="btn btn-danger" onclick="setStatusManual('${u.nis}','${u.nama}','${u.kelas}','ALPA')">Alpa</button>
+              </div>
+            </td>
+            <td>
+              <small>H:${r.hadir} | T:${r.telat} | S:${r.sakit} | I:${r.izin} | A:${r.alpa}</small>
+            </td>
+          </tr>
+        `;
+        container.innerHTML += row;
+      });
+    } else {
+      container.innerHTML = "<tr><td colspan='4' class='text-center'>Data siswa belum dimuat atau kosong.</td></tr>";
+    }
+  } catch (err) {
+    console.error(err);
+    alert("Gagal memuat rekap bulanan!");
+  } finally {
+    document.body.style.cursor = 'default';
+  }
 }
 
 // Start

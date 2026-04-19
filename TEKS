@@ -1,1 +1,422 @@
-https://script.google.com/macros/s/AKfycbwd-ZWvaEIwbxwUCchK_6cYK7c1xnqRtqrEugYIrjj3On82kH68Hr_lSoN4u72r7Cxf/exec
+/**
+ * BACKEND E-PRESENSI SMK AD-DA'WAH (V3 - FULL VERSION)
+ * Termasuk: FONNTE WA, REKAP, JADWAL, CORE ABSENSI & WAJAH
+ */
+
+const SS = SpreadsheetApp.getActiveSpreadsheet();
+const SHEET_PESERTA = SS.getSheetByName("Data_Peserta");
+const SHEET_ABSEN = SS.getSheetByName("Data_Absen");
+const SHEET_SETTING = SS.getSheetByName("Pengaturan");
+const SHEET_JADWAL = SS.getSheetByName("Data_Jadwal"); // Sheet Baru
+
+// =========================================================================
+// HELPER: PENGATURAN & WA FONNTE
+// =========================================================================
+function getSetting(key) {
+  const data = SHEET_SETTING.getDataRange().getValues();
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][0] === key) return data[i][1];
+  }
+  return null;
+}
+
+function setSetting(key, value) {
+  const data = SHEET_SETTING.getDataRange().getValues();
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][0] === key) {
+      SHEET_SETTING.getRange(i + 1, 2).setValue(value);
+      return;
+    }
+  }
+  SHEET_SETTING.appendRow([key, value]);
+}
+
+function getPhoneOrtu(nisTarget) {
+  const data = SHEET_PESERTA.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][2]) === String(nisTarget)) return String(data[i][6]); // Kolom G: No HP Ortu
+  }
+  return null;
+}
+
+function sendFonnteWA(target, message) {
+  const token = getSetting("fonnteToken");
+  if (!token || !target || target === "") return;
+  
+  const payload = { 
+    "target": target, 
+    "message": message, 
+    "delay": "2" 
+  }; 
+  
+  const options = {
+    "method": "post",
+    "headers": { "Authorization": token },
+    "payload": payload,
+    "muteHttpExceptions": true
+  };
+  
+  try { 
+    UrlFetchApp.fetch("https://api.fonnte.com/send", options); 
+  } catch(e) {
+    console.log("Error Fonnte: " + e.message);
+  }
+}
+
+// =========================================================================
+// 1. GET (READ - Data Peserta)
+// =========================================================================
+function doGet() {
+  const data = SHEET_PESERTA.getDataRange().getValues();
+  data.shift(); 
+  const result = data.map(row => ({
+    nama: row[0], role: row[1], nis: String(row[2]), nisn: row[3],
+    kelas: row[4], no_siswa: row[5], no_ortu: row[6], descriptor: row[7] 
+  }));
+  return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// =========================================================================
+// 2. POST (WRITE & ACTIONS)
+// =========================================================================
+function doPost(e) {
+  try {
+    const payload = JSON.parse(e.postData.contents);
+    const action = payload.action;
+
+    // --- PENGATURAN (Termasuk WA Token & Map) ---
+    if (action === "get_settings") {
+      return responseJSON("Success", {
+        jamMasuk: getSetting("jamMasuk") || "07:00",
+        jamPulang: getSetting("jamPulang") || "14:00",
+        polygon: getSetting("polygon") || "",
+        fonnteToken: getSetting("fonnteToken") || "",
+        fonnteGrupId: getSetting("fonnteGrupId") || ""
+      });
+    }
+
+    if (action === "save_settings") {
+      if (payload.type === "polygon") setSetting("polygon", payload.value);
+      else if (payload.type === "jam") {
+        setSetting("jamMasuk", payload.jamMasuk); setSetting("jamPulang", payload.jamPulang);
+      } else if (payload.type === "fonnte") {
+        setSetting("fonnteToken", payload.token); setSetting("fonnteGrupId", payload.grupId);
+      }
+      return responseJSON("Success", "Pengaturan berhasil disimpan!");
+    }
+
+    // --- ABSEN OTOMATIS (DENGAN NOTIFIKASI WA) ---
+    if (action === "absen_otomatis") {
+      const tglSekarang = Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd");
+      const jamSekarangString = Utilities.formatDate(new Date(), "GMT+7", "HH:mm");
+      const jamDetikSekarang = Utilities.formatDate(new Date(), "GMT+7", "HH:mm:ss");
+      
+      const { nis, nama, kelas, role, jamBatasMasuk, jamBatasPulang } = payload;
+      const dataAbsen = SHEET_ABSEN.getDataRange().getValues();
+      let rowAbsenTerakhir = -1;
+
+      for (let i = 1; i < dataAbsen.length; i++) {
+        if (dataAbsen[i][0]) {
+            const tglDiSheet = Utilities.formatDate(new Date(dataAbsen[i][0]), "GMT+7", "yyyy-MM-dd");
+            if (tglDiSheet === tglSekarang && String(dataAbsen[i][1]) === String(nis)) {
+              rowAbsenTerakhir = i + 1; break;
+            }
+        }
+      }
+
+      if (rowAbsenTerakhir === -1) { // MASUK
+        let statusHadir = "HADIR";
+        if (role === "Siswa" && jamBatasMasuk && jamSekarangString > jamBatasMasuk) statusHadir = "TELAT";
+        
+        SHEET_ABSEN.appendRow([ tglSekarang, nis, nama, kelas, statusHadir, "'" + jamDetikSekarang, "" ]);
+        
+        // Notif WA Ortu khusus Siswa
+        if (role === "Siswa") {
+           const hpOrtu = getPhoneOrtu(nis);
+           if (hpOrtu) sendFonnteWA(hpOrtu, `Info Kehadiran Addawah:\nBapak/Ibu, anak Anda *${nama}* telah absen MASUK pada pukul ${jamDetikSekarang} WIB.\nStatus: ${statusHadir}.`);
+        }
+        
+        return responseJSON("Success", `Berhasil Absen MASUK (${statusHadir})`);
+      } else { // PULANG
+        const jamPulangDiSheet = dataAbsen[rowAbsenTerakhir - 1][6]; 
+        if (!jamPulangDiSheet || jamPulangDiSheet === "") {
+          if (role === "Siswa" && jamBatasPulang && jamSekarangString < jamBatasPulang) {
+              return responseJSON("Error", `Belum waktunya pulang! Minimal jam ${jamBatasPulang}`);
+          }
+          SHEET_ABSEN.getRange(rowAbsenTerakhir, 7).setValue("'" + jamDetikSekarang); 
+          
+          // Notif WA Pulang
+          if (role === "Siswa") {
+             const hpOrtu = getPhoneOrtu(nis);
+             if (hpOrtu) sendFonnteWA(hpOrtu, `Info Kepulangan Addawah:\nBapak/Ibu, anak Anda *${nama}* telah absen PULANG dari sekolah pada pukul ${jamDetikSekarang} WIB.`);
+          }
+          return responseJSON("Success", "Berhasil Absen PULANG");
+        } else {
+          return responseJSON("Info", "Anda sudah absen pulang hari ini.");
+        }
+      }
+    }
+
+    // --- INPUT MANUAL (Sakit/Izin/Alpa) ---
+    if (action === "input_manual") {
+      const { tanggal, nis, nama, kelas, status } = payload;
+      const dataAbsen = SHEET_ABSEN.getDataRange().getValues();
+      let isUpdate = false;
+
+      for (let i = 1; i < dataAbsen.length; i++) {
+        if (dataAbsen[i][0]) {
+          const tglDiSheet = Utilities.formatDate(new Date(dataAbsen[i][0]), "GMT+7", "yyyy-MM-dd");
+          if (tglDiSheet === tanggal && String(dataAbsen[i][1]) === String(nis)) {
+            SHEET_ABSEN.getRange(i + 1, 5).setValue(status); 
+            SHEET_ABSEN.getRange(i + 1, 6).setValue("-"); 
+            SHEET_ABSEN.getRange(i + 1, 7).setValue("-"); 
+            isUpdate = true; break;
+          }
+        }
+      }
+      
+      if(!isUpdate) {
+        SHEET_ABSEN.appendRow([tanggal, nis, nama, kelas, status, "-", "-"]);
+      }
+      return responseJSON("Success", `Status ${nama} pada ${tanggal} berhasil diset menjadi ${status}`);
+    }
+
+    // --- BLAST GRUP WA (JADWAL PER JAM & REKAP GURU/STAFF) ---
+    if (action === "blast_grup") {
+      const grupId = getSetting("fonnteGrupId");
+      if(!grupId) return responseJSON("Error", "ID Grup Fonnte belum disetting!");
+
+      // Format Tanggal Rapi
+      const hariIni = new Date();
+      const namaHari = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"][hariIni.getDay()];
+      const namaBulan = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"][hariIni.getMonth()];
+      const tanggalRapi = `${namaHari}, ${hariIni.getDate()} ${namaBulan} ${hariIni.getFullYear()}`;
+      const tglSekarang = Utilities.formatDate(hariIni, "GMT+7", "yyyy-MM-dd");
+
+      // 1. TARIK DATA KEHADIRAN (ABSEN) HARI INI
+      const dataAbsen = SHEET_ABSEN.getDataRange().getValues();
+      dataAbsen.shift();
+      const absenHariIni = dataAbsen.filter(row => {
+        return row[0] && Utilities.formatDate(new Date(row[0]), "GMT+7", "yyyy-MM-dd") === tglSekarang;
+      });
+
+      // Fungsi mencari status seseorang
+      function getStatusString(namaTarget) {
+        const rek = absenHariIni.find(r => String(r[2]).toLowerCase() === String(namaTarget).toLowerCase());
+        if(!rek) return "Belum Absen";
+        if(rek[4] === "HADIR" || rek[4] === "TELAT") return `Hadir pukul ${String(rek[5]).replace("1899-12-30T", "").substring(0, 5)}`;
+        return rek[4]; 
+      }
+
+      // 2. TARIK DATA JADWAL HARI INI
+      const dataJadwal = SHEET_JADWAL.getDataRange().getValues();
+      dataJadwal.shift(); 
+      
+      let grupGuru = {}; 
+      
+      dataJadwal.forEach(row => {
+        // Cek apakah jadwal ini hari ini (Mencocokkan tulisan "Senin", dll di Sheet Jadwal)
+        if (String(row[0]).toLowerCase() === namaHari.toLowerCase()) {
+          const jamKe = `Jam ke - ${row[1]}`; // Otomatis menambahkan kata "Jam ke -"
+          const namaGuru = row[3];
+          
+          if (namaGuru) {
+            if (!grupGuru[jamKe]) grupGuru[jamKe] = [];
+            
+            // Masukkan nama guru dan cari status absennya sekalian
+            grupGuru[jamKe].push({
+              nama: namaGuru,
+              status: getStatusString(namaGuru)
+            });
+          }
+        }
+      });
+
+      // 3. TARIK DATA STAFF
+      const dataPeserta = SHEET_PESERTA.getDataRange().getValues();
+      dataPeserta.shift();
+      let daftarStaff = [];
+      dataPeserta.forEach(row => {
+        if (row[1] === "Staff") {
+          daftarStaff.push({
+            nama: row[0],
+            status: getStatusString(row[0])
+          });
+        }
+      });
+
+      // 4. SUSUN PESAN WA FINAL
+      let textMsg = `*REKAP ABSENSI HARIAN*\n`;
+      textMsg += `Hari, Tanggal : ${tanggalRapi}\n\n`;
+      
+      textMsg += `*STATUS GURU TERJADWAL:*\n`;
+      
+      const listJam = Object.keys(grupGuru);
+      if (listJam.length > 0) {
+        listJam.forEach(jamSesi => {
+          textMsg += `${jamSesi}\n`; // Tampilkan "Jam ke - 1"
+          
+          // Tampilkan guru di jam tersebut pakai nomor
+          grupGuru[jamSesi].forEach((guru, index) => {
+            textMsg += `  ${index + 1}. ${guru.nama} (${guru.status})\n`;
+          });
+        });
+      } else {
+        textMsg += `- Tidak ada jadwal guru hari ini -\n`;
+      }
+      
+      textMsg += `\n*STATUS STAFF:*\n`;
+      if (daftarStaff.length > 0) {
+        daftarStaff.forEach((staff, index) => {
+          textMsg += `${index + 1}. ${staff.nama} (${staff.status})\n`;
+        });
+      } else {
+        textMsg += `- Belum ada data staff -\n`;
+      }
+
+      textMsg += `\n> _Sent via E-Absensi Fonnte_`;
+
+      // Kirim via Fonnte
+      sendFonnteWA(grupId, textMsg);
+      return responseJSON("Success", "Rekap kehadiran dan jadwal harian berhasil dikirim ke Grup WA!");
+    }
+
+    // --- REKAP BULANAN (UNTUK DASHBOARD ADMIN/WALI) ---
+    if (action === "get_rekap_bulanan") {
+      const { bulan, tahun } = payload; 
+      const dataAbsen = SHEET_ABSEN.getDataRange().getValues();
+      dataAbsen.shift();
+      
+      let rekap = {}; 
+      
+      dataAbsen.forEach(row => {
+        if (row[0]) {
+          const tgl = new Date(row[0]);
+          const m = Utilities.formatDate(tgl, "GMT+7", "MM");
+          const y = Utilities.formatDate(tgl, "GMT+7", "yyyy");
+          
+          if (m === bulan && y === String(tahun)) {
+            const nis = String(row[1]);
+            const status = String(row[4]).toUpperCase();
+            
+            if(!rekap[nis]) rekap[nis] = { hadir: 0, telat: 0, sakit: 0, izin: 0, alpa: 0 };
+            
+            if(status === "HADIR") rekap[nis].hadir += 1;
+            else if(status === "TELAT") rekap[nis].telat += 1;
+            else if(status === "SAKIT") rekap[nis].sakit += 1;
+            else if(status === "IZIN") rekap[nis].izin += 1;
+            else if(status === "ALPA") rekap[nis].alpa += 1;
+          }
+        }
+      });
+      return responseJSON("Success", rekap);
+    }
+
+    // --- AMBIL DATA ABSEN UNTUK TABEL ADMIN/WALI ---
+    if (action === "get_absen") {
+      const dataAbsen = SHEET_ABSEN.getDataRange().getValues();
+      dataAbsen.shift(); 
+      let result = dataAbsen.map(row => ({
+        tanggal: row[0] ? Utilities.formatDate(new Date(row[0]), "GMT+7", "yyyy-MM-dd") : "",
+        tanggal_indo: row[0] ? formatTanggalIndo(new Date(row[0])) : "",
+        nis: String(row[1]),
+        nama: row[2],
+        kelas: row[3],
+        status: row[4],
+        jam_masuk: String(row[5]).replace("'", ""),
+        jam_pulang: String(row[6]).replace("'", "")
+      }));
+      return responseJSON("Success", result);
+    }
+
+    // --- REKAM / UPDATE DESCRIPTOR WAJAH ---
+    if (action === "update_wajah") {
+      const { nis, descriptor } = payload;
+      const data = SHEET_PESERTA.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][2]) === String(nis)) {
+          SHEET_PESERTA.getRange(i + 1, 8).setValue(JSON.stringify(descriptor)); // Kolom H
+          return responseJSON("Success", "Wajah berhasil direkam!");
+        }
+      }
+      return responseJSON("Error", "Siswa/Guru tidak ditemukan!");
+    }
+
+    // --- IMPORT DATA EXCEL KE GOOGLE SHEETS ---
+    if (action === "import_data") {
+      const dataImport = payload.data; 
+      dataImport.forEach(item => {
+        SHEET_PESERTA.appendRow([
+          item["Nama Lengkap"] || "",
+          item["Role"] || "Siswa",
+          String(item["NIS atau NIP"] || ""),
+          String(item["NISN atau Kode Guru"] || ""),
+          item["Kelas atau Mapel"] || "",
+          String(item["No HP Siswa"] || ""),
+          String(item["No HP Orang Tua"] || ""),
+          "" 
+        ]);
+      });
+      return responseJSON("Success", "Data berhasil diimport ke Database!");
+    }
+
+    // --- EDIT DATA PESERTA (USER) ---
+    if (action === "edit_user") {
+      const { nis, nama, role, nis_baru, nisn, kelas, no_siswa, no_ortu } = payload;
+      const data = SHEET_PESERTA.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][2]) === String(nis)) {
+          SHEET_PESERTA.getRange(i + 1, 1).setValue(nama);
+          SHEET_PESERTA.getRange(i + 1, 2).setValue(role);
+          SHEET_PESERTA.getRange(i + 1, 3).setValue(nis_baru);
+          SHEET_PESERTA.getRange(i + 1, 4).setValue(nisn);
+          SHEET_PESERTA.getRange(i + 1, 5).setValue(kelas);
+          SHEET_PESERTA.getRange(i + 1, 6).setValue("'" + no_siswa);
+          SHEET_PESERTA.getRange(i + 1, 7).setValue("'" + no_ortu);
+          return responseJSON("Success", "Data peserta berhasil diperbarui!");
+        }
+      }
+      return responseJSON("Error", "Peserta tidak ditemukan!");
+    }
+
+  } catch (err) {
+    return responseJSON("Error", err.toString());
+  }
+}
+
+// =========================================================================
+// HELPER: RESPONSE JSON & FORMAT TANGGAL
+// =========================================================================
+function responseJSON(status, message) {
+  return ContentService.createTextOutput(JSON.stringify({ status: status, data: message, message: message })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function formatTanggalIndo(dateValue) {
+  let dateObj = (dateValue instanceof Date) ? dateValue : new Date(dateValue);
+  if (isNaN(dateObj)) return String(dateValue); 
+  const days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+  const months = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+  return `${days[dateObj.getDay()]}, ${dateObj.getDate()} ${months[dateObj.getMonth()]} ${dateObj.getFullYear()}`;
+}
+
+function TEST_KIRIM_WA() {
+  const token = getSetting("fonnteToken"); 
+  const targetTest = "087881965963"; 
+  
+  const options = {
+    method: 'post',
+    payload: { 
+      target: targetTest, 
+      message: "Halo, ini pesan percobaan dari Google Apps Script!" 
+    },
+    headers: { Authorization: token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch("https://api.fonnte.com/send", options);
+    Logger.log("HASIL FONNTE: " + response.getContentText()); 
+  } catch(e) {
+    Logger.log("ERROR GAS: " + e.toString());
+  }
+}
