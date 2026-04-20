@@ -259,8 +259,9 @@ function checkGeofence() {
     if (inside) {
         gpsStatus.className = "gps-status text-success";
         gpsStatus.innerText = "📍 Posisi Sesuai: Anda berada di Area Sekolah.";
-    } else {
+    } } else {
         gpsStatus.className = "gps-status text-danger";
+        // Ubah innerText menjadi innerHTML agar bisa memasukkan tag <br> dan <small>
         gpsStatus.innerHTML = `
             ❌ Posisi Ditolak: Anda berada di Luar Area Sekolah!<br>
             <span style="font-size: 12px; color: #6c757d;">
