@@ -259,7 +259,7 @@ function checkGeofence() {
     if (inside) {
         gpsStatus.className = "gps-status text-success";
         gpsStatus.innerText = "📍 Posisi Sesuai: Anda berada di Area Sekolah.";
-    } } else {
+    } else { // <-- Perhatikan: Kurung kurawalnya cukup satu saja sebelum 'else'
         gpsStatus.className = "gps-status text-danger";
         // Ubah innerText menjadi innerHTML agar bisa memasukkan tag <br> dan <small>
         gpsStatus.innerHTML = `
