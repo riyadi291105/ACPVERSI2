@@ -261,7 +261,7 @@ function checkGeofence() {
         gpsStatus.innerText = "📍 Posisi Sesuai: Anda berada di Area Sekolah.";
     } else {
         gpsStatus.className = "gps-status text-danger";
-        gpsStatus.innerText = `
+        gpsStatus.innerHTML = `
             ❌ Posisi Ditolak: Anda berada di Luar Area Sekolah!<br>
             <span style="font-size: 12px; color: #6c757d;">
                 <em>⏳ Jika Anda sudah di sekolah, diamkan HP 15-30 detik sampai GPS akurat. Jangan di-refresh.</em>
