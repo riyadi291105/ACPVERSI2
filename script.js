@@ -208,6 +208,16 @@ function renderAdminAbsen() {
 // ------------------------------------------------------------------
 function requestLocation() {
     return new Promise((resolve, reject) => {
+        const urlParams = new URLSearchParams(window.location.search);
+        // Jika URL ditambahkan ?mode=mesin_sekolah, otomatis lolos GPS
+        if (urlParams.get('mode') === 'mesin_sekolah') {
+            userLocation = [-6.123456, 106.123456]; // Isi dengan koordinat palsu (titik sekolah) agar sistem tidak error
+            isInsideArea = true;
+            gpsStatus.className = "gps-status text-success";
+            gpsStatus.innerHTML = "📍 Posisi Sesuai: Menggunakan Mesin Utama Sekolah.";
+            resolve();
+            return; // Hentikan proses pencarian GPS HP di sini
+        }
         if (!navigator.geolocation) {
             gpsStatus.innerText = "❌ Browser tidak mendukung GPS!";
             resolve(); return;
