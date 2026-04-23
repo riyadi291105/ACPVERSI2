@@ -244,6 +244,16 @@ function requestLocation() {
 }
 
 function checkGeofence() {
+    // --- TAMBAHAN PENTING: Kunci Bypass untuk Mesin ---
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('mode') === 'mesin_sekolah') {
+        isInsideArea = true;
+        gpsStatus.className = "gps-status text-success";
+        gpsStatus.innerHTML = "📍 Posisi Sesuai: Menggunakan Mesin Utama Sekolah.";
+        return; // Hentikan fungsi di sini, jangan hitung poligon!
+    }
+    // ---------------------------------------------------
+
     // Pisahkan pengecekan agar pesannya jelas penyebabnya lambat di mana
     if (!schoolPolygon) {
         gpsStatus.innerText = "⏳ Mendownload data area sekolah dari server...";
@@ -269,9 +279,8 @@ function checkGeofence() {
     if (inside) {
         gpsStatus.className = "gps-status text-success";
         gpsStatus.innerText = "📍 Posisi Sesuai: Anda berada di Area Sekolah.";
-    } else { // <-- Perhatikan: Kurung kurawalnya cukup satu saja sebelum 'else'
+    } else { 
         gpsStatus.className = "gps-status text-danger";
-        // Ubah innerText menjadi innerHTML agar bisa memasukkan tag <br> dan <small>
         gpsStatus.innerHTML = `
             ❌ Posisi Ditolak: Anda berada di Luar Area Sekolah!<br>
             <span style="font-size: 12px; color: #6c757d;">
@@ -280,7 +289,6 @@ function checkGeofence() {
         `;
     }
 }
-
 // ------------------------------------------------------------------
 // DETEKSI WAJAH & AUTO ABSEN
 // ------------------------------------------------------------------
