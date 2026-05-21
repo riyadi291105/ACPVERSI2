@@ -292,13 +292,31 @@ function checkGeofence() {
 // ------------------------------------------------------------------
 // DETEKSI WAJAH & AUTO ABSEN
 // ------------------------------------------------------------------
+const helperCanvas = document.createElement('canvas');
+const helperCtx = helperCanvas.getContext('2d', { willReadFrequently: true });
+
 async function detect() {
     if (video.paused || video.ended || mode !== 'absen') {
         requestAnimationFrame(detect); return;
     }
 
+    // 2. Putar Video ke dalam Canvas Bayangan (-90 derajat)
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+        helperCanvas.width = video.videoHeight; // Dibalik karena rotasi
+        helperCanvas.height = video.videoWidth;
+
+        helperCtx.clearRect(0, 0, helperCanvas.width, helperCanvas.height);
+        helperCtx.save();
+        helperCtx.translate(helperCanvas.width / 2, helperCanvas.height / 2);
+        helperCtx.rotate(-90 * Math.PI / 180); 
+        helperCtx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2);
+        helperCtx.restore();
+    }
+
     const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 128 });
-    const result = await faceapi.detectSingleFace(video, options).withFaceLandmarks().withFaceDescriptor();
+    
+    // 3. AI membaca dari Canvas (Bukan dari Video langsung)
+    const result = await faceapi.detectSingleFace(helperCanvas, options).withFaceLandmarks().withFaceDescriptor();
 
     if (result && !isProcessing && faceMatcher) {
         const nose = result.landmarks.getNose();
@@ -356,7 +374,6 @@ async function detect() {
     }
     requestAnimationFrame(detect);
 }
-
 // ------------------------------------------------------------------
 // TABEL PESERTA & EDIT DATA
 // ------------------------------------------------------------------
