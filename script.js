@@ -356,24 +356,41 @@ async function detect() {
                     
                     instruction.innerHTML = `<span class='text-warning'>${resJson.message}</span>`;
                     
-                    // PENEMPATAN SUARA DI SINI (Hanya bunyi saat sukses absen)
+                   // PENEMPATAN SUARA DI SINI (Hanya bunyi saat sukses absen)
                     if (resJson.status === "Success" || resJson.message.toLowerCase().includes("berhasil")) {
                         bicara(`Terima kasih ${user.nama}, absen berhasil.`);
+
+                        // 👇 SEPAKET KODE BARU UNTUK KIRIM WA OTOMATIS GURU & STAFF 👇
+                        if (user.role === 'Guru' || user.role === 'Staff') {
+                            fetch(URL_GAS, {
+                                method: "POST",
+                                body: JSON.stringify({
+                                    action: "kirim_wa_instan", // Dibaca oleh Google Apps Script nanti
+                                    nis: user.nis,
+                                    nama: user.nama,
+                                    role: user.role
+                                })
+                            }).catch(err => console.error("Gagal kirim WA otomatis:", err));
+                        }
+                        // 👆 ------------------------------------------------------- 👆
                     }
 
                 } catch(e) {
                     instruction.innerText = "Gagal menghubungi server!";
                 }
-                
+
                 setTimeout(() => { 
                     isProcessing = false; 
                     instruction.innerText = "Sistem Siap! Silakan Hadap Kamera.";
                 }, 4000);
             }
         }
-    }
+    } // <-- Kurung kurawal ini sempat hilang
+    
+    // 👇 INI PERINTAH PENTING YANG BIKIN KAMERA TERUS JALAN 👇
     requestAnimationFrame(detect);
 }
+
 // ------------------------------------------------------------------
 // TABEL PESERTA & EDIT DATA
 // ------------------------------------------------------------------
