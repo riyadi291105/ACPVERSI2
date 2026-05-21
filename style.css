@@ -77,8 +77,10 @@ button:hover {
 
 video {
     border-radius: 15px;
+    transform: rotate(-90deg); /* Putar balik agar tegak di layar tablet */
+    transform-origin: center;
+    object-fit: cover;
 }
-
 canvas {
     position: absolute;
     top: 0;
