@@ -64,25 +64,44 @@ button:hover {
     transform: scale(1.05);
 }
 
-.video-wrapper {
+/* GANTI BAGIAN INI DI CSS KAMU */
+
+.video-container { /* Sebelumnya kamu nulis .video-wrapper, saya samakan dengan HTML */
     position: relative;
-    width: 640px;
-    height: 480px;
+    /* UKURAN DIBALIK MENJADI PORTRAIT KARENA VIDEO DIPUTAR */
+    width: 480px;  
+    height: 640px; 
     background: #000;
     border-radius: 15px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    overflow: hidden;
+    overflow: hidden; /* Penting: memotong ujung video yang keluar dari kotak */
     margin: 0 auto;
+    /* Pusatkan video yang diputar di tengah kotak */
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
-video {
-    border-radius: 15px;
-    transform: rotate(-90deg); /* Putar balik agar tegak di layar tablet */
-    transform-origin: center;
+#video {
+    /* Dimensi asli dari kamera fisik (Landscape) */
+    width: 640px;
+    height: 480px;
+    /* Putar -90 derajat ke kiri */
+    transform: rotate(-90deg);
     object-fit: cover;
+    border-radius: 15px;
+    /* Hilangkan absolute jika ada, agar flexbox dari container bekerja */
 }
+
+/* Jika FaceAPI kamu memunculkan kotak hijau/canvas di layar */
 canvas {
     position: absolute;
-    top: 0;
-    left: 0;
+    top: 50%;
+    left: 50%;
+    /* Samakan dengan dimensi asli video */
+    width: 640px;
+    height: 480px;
+    /* Canvas juga ikut diputar dan dipusatkan agar kotak hijaunya pas di wajah */
+    transform: translate(-50%, -50%) rotate(-90deg);
+    pointer-events: none; /* Agar tidak menghalangi klik */
 }
