@@ -42,7 +42,7 @@
             
             <div class="mb-4">
                 <img src="image/Addawah@300x.png" alt="Logo SMK Ad-Da'wah" style="max-height: 80px;" onerror="this.innerHTML='SMK AD-DA\'WAH'">
-                <h3 class="mt-2 fw-bold text-success">Sistem Presensi SMK AD</h3>
+                <h3 class="mt-2 fw-bold text-success">Sistem Presensi</h3>
             </div>
 
             <div class="main-card">
@@ -58,9 +58,13 @@
                         <h5>Menyiapkan Sistem...</h5>
                     </div>
                     
-                    <div class="video-container" id="videoContainer">
-                        <video id="video" autoplay muted playsinline></video>
-                    </div>
+                 <div id="videoContainer" style="width: 480px; height: 640px; overflow: hidden; position: relative; margin: 0 auto; border-radius: 15px; background: #000;">
+    
+    <video id="video" autoplay muted playsinline style="width: 640px !important; height: 480px !important; position: absolute; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%) rotate(-90deg) !important; object-fit: cover;"></video>
+    
+    <canvas id="canvas" style="width: 640px !important; height: 480px !important; position: absolute; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%) rotate(-90deg) !important; pointer-events: none;"></canvas>
+
+</div>
                     <div id="instruction" class="instruction-box">Sistem belum siap...</div>
                     <div id="gpsStatus" class="gps-status text-warning">🌍 Memeriksa Lokasi GPS...</div>
                 </div>
