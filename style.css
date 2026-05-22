@@ -105,3 +105,19 @@ canvas {
     transform: translate(-50%, -50%) rotate(-90deg);
     pointer-events: none; /* Agar tidak menghalangi klik */
 }
+
+#absenArea {
+    /* Putar seluruh kotak area absen ke kiri 90 derajat */
+    transform: rotate(-90deg);
+    transform-origin: center center;
+    
+    /* Posisikan ke tengah layar */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    
+    /* (Opsional) Sesuaikan lebar agar tidak terpotong saat diputar */
+    width: 100vh; 
+    height: 100vw;
+}
