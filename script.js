@@ -107,7 +107,7 @@ async function loadDatabase() {
         const validData = databaseSiswa.filter(s => s.descriptor && s.descriptor !== "");
         if(validData.length > 0) {
             const labeled = validData.map(s => new faceapi.LabeledFaceDescriptors(String(s.nis), [new Float32Array(JSON.parse(s.descriptor))]));
-            faceMatcher = new faceapi.FaceMatcher(labeled, 0.55);
+            faceMatcher = new faceapi.FaceMatcher(labeled, 0.68);
         }
         renderTable();
         populateKelasDropdown(); 
@@ -300,11 +300,10 @@ async function detect() {
         requestAnimationFrame(detect); return;
     }
 
-    // 2. Putar Video ke dalam Canvas Bayangan (-90 derajat)
+    // 1. ROTASI INTERNAL KAMERA
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-        helperCanvas.width = video.videoHeight; // Dibalik karena rotasi
+        helperCanvas.width = video.videoHeight; 
         helperCanvas.height = video.videoWidth;
-
         helperCtx.clearRect(0, 0, helperCanvas.width, helperCanvas.height);
         helperCtx.save();
         helperCtx.translate(helperCanvas.width / 2, helperCanvas.height / 2);
@@ -313,81 +312,62 @@ async function detect() {
         helperCtx.restore();
     }
 
-    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 128 });
-    
-    // 3. AI membaca dari Canvas (Bukan dari Video langsung)
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 160 });
     const result = await faceapi.detectSingleFace(helperCanvas, options).withFaceLandmarks().withFaceDescriptor();
 
+    // 2. JIKA WAJAH TERDETEKSI
     if (result && !isProcessing && faceMatcher) {
-        const nose = result.landmarks.getNose();
-        const jaw = result.landmarks.getJawOutline();
-        const ratio = Math.abs(nose[0].x - jaw[16].x) / Math.abs(nose[0].x - jaw[0].x);
-
+        // AI langsung mencocokkan wajah tanpa peduli posisi rahang
         const match = faceMatcher.findBestMatch(result.descriptor);
 
         if (match.label !== 'unknown') {
             const user = databaseSiswa.find(s => String(s.nis) === match.label);
-            instruction.innerHTML = `<b>${user.nama}</b> dikenali!<br>Menoleh KANAN untuk absen...`;
-
-            if (ratio < 0.50) { 
-                if (!isInsideArea && schoolPolygon) {
-                    instruction.innerHTML = "<span class='text-danger'>DITOLAK: Anda di luar jangkauan GPS sekolah!</span>";
-                    setTimeout(() => { instruction.innerText = "Silakan Hadap Kamera"; }, 3000);
-                    return requestAnimationFrame(detect);
-                }
-
-                isProcessing = true;
-                instruction.innerHTML = `<span class='text-white'>Data dikirim ke server...</span>`;
-                
-                try {
-                    const response = await fetch(URL_GAS, {
-                        method: 'POST',
-                        body: JSON.stringify({ 
-                            action: "absen_otomatis", 
-                            nis: user.nis, 
-                            nama: user.nama, 
-                            kelas: user.kelas,
-                            role: user.role, 
-                            jamBatasMasuk: serverJamMasuk,
-                            jamBatasPulang: serverJamPulang
-                        })
-                    });
-                    const resJson = await response.json();
-                    
-                    instruction.innerHTML = `<span class='text-warning'>${resJson.message}</span>`;
-                    
-                   // PENEMPATAN SUARA DI SINI (Hanya bunyi saat sukses absen)
-                    if (resJson.status === "Success" || resJson.message.toLowerCase().includes("berhasil")) {
-                        bicara(`Terima kasih ${user.nama}, absen berhasil.`);
-
-                        // 👇 SEPAKET KODE BARU UNTUK KIRIM WA OTOMATIS GURU & STAFF 👇
-                        if (user.role === 'Guru' || user.role === 'Staff') {
-                            fetch(URL_GAS, {
-                                method: "POST",
-                                body: JSON.stringify({
-                                    action: "kirim_wa_instan", // Dibaca oleh Google Apps Script nanti
-                                    nis: user.nis,
-                                    nama: user.nama,
-                                    role: user.role
-                                })
-                            }).catch(err => console.error("Gagal kirim WA otomatis:", err));
-                        }
-                        // 👆 ------------------------------------------------------- 👆
-                    }
-
-                } catch(e) {
-                    instruction.innerText = "Gagal menghubungi server!";
-                }
-
-                setTimeout(() => { 
-                    isProcessing = false; 
-                    instruction.innerText = "Sistem Siap! Silakan Hadap Kamera.";
-                }, 4000);
+            
+            // CEK GPS
+            if (!isInsideArea && schoolPolygon) {
+                instruction.innerHTML = "<span class='text-danger'>DITOLAK: Anda di luar jangkauan GPS!</span>";
+                setTimeout(() => { instruction.innerText = "Sistem Siap! Silakan Hadap Kamera"; }, 3000);
+                return requestAnimationFrame(detect);
             }
+
+            // PROSES ABSEN
+            isProcessing = true;
+            instruction.innerHTML = `<span class='text-white'><b>${user.nama}</b> dikenali!<br>Mengirim data absen...</span>`;
+            
+            try {
+                const response = await fetch(URL_GAS, {
+                    method: 'POST',
+                    body: JSON.stringify({ 
+                        action: "absen_otomatis", 
+                        nis: user.nis, nama: user.nama, kelas: user.kelas, role: user.role, 
+                        jamBatasMasuk: serverJamMasuk, jamBatasPulang: serverJamPulang
+                    })
+                });
+                const resJson = await response.json();
+                
+                instruction.innerHTML = `<span class='text-warning'>${resJson.message}</span>`;
+                
+                if (resJson.status === "Success" || resJson.message.toLowerCase().includes("berhasil")) {
+                    bicara(`Terima kasih ${user.nama}, absen berhasil.`);
+                }
+            } catch(e) {
+                instruction.innerText = "Gagal menghubungi server!";
+            }
+
+            setTimeout(() => { 
+                isProcessing = false; 
+                instruction.innerText = "Sistem Siap! Silakan Hadap Kamera.";
+            }, 4000);
+            
+        } else {
+            instruction.innerHTML = "Wajah tidak dikenali... (Maju sedikit/Terangkan cahaya)";
         }
-    } // <-- Kurung kurawal ini sempat hilang
-    
-    // 👇 INI PERINTAH PENTING YANG BIKIN KAMERA TERUS JALAN 👇
+    } 
+    // JIKA TIDAK ADA WAJAH (ORANG PERGI), RESET TEKS
+    else if (!result && !isProcessing) {
+        instruction.innerText = "Sistem Siap! Silakan Hadap Kamera.";
+    }
+
     requestAnimationFrame(detect);
 }
 
