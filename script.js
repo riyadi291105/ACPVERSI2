@@ -41,8 +41,20 @@ async function init() {
         await loadAbsenData();
 
         // 3. Hidupkan Kamera
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+       // Memaksa browser menarik format berdiri (portrait)
+// GANTI BAGIAN INI KEMBALI KE NORMAL
+const constraints = {
+    video: {
+        width: { ideal: 640 },  // Kembalikan ke 640
+        height: { ideal: 480 }, // Kembalikan ke 480
+        facingMode: "user"
+    }
+};
+
+navigator.mediaDevices.getUserMedia(constraints)
+    .then(stream => {
         video.srcObject = stream;
+    })  // ... dst ...
         
         loadingBox.style.display = 'none';
         videoContainer.style.display = 'block';
